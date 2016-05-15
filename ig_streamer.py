@@ -16,6 +16,7 @@ from trading_ig.lightstreamer import Subscription
 import trading_ig.compat as compat
 
 import datetime
+from threading import Thread
 
 import pdb
 
@@ -24,15 +25,21 @@ logging.basicConfig(level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
-class streamer(object):
+class streamer(Thread):
 
-    tickStack = list()
-    accountStack = list()
+    tickStack = list()  # list of recently streamed prices as IGtick objects
+    accountStack = list()   # list of recently streamed account updates
+    subcriptionKeyStore = {}    # dictionary of keys to subscribed epics
     ig_stream_service = None
 
-    def __init__(self, connect=True):        
+    def __init__(self, connect=False):
+        Thread.__init__(self)   # initialise thread   
         if connect:
             self.connect()
+
+    def run(self):
+        print("Starting streamer...")
+        self.connect()
 
     # Connect to the IG Streaming API
     def connect(self,accountId=None):
@@ -66,22 +73,61 @@ class streamer(object):
 
     # Add a listener using the epic name
     def addEpicListener(self, epicName):
-        logger.debug("Adding epic listener...")
-        # Make Subscription using MERGE mode
-        subcription_prices = Subscription(
-            mode="MERGE",
-            items=['MARKET:'+epicName],
-            fields=["UPDATE_TIME", "BID", "OFFER", "CHANGE", "MARKET_STATE"]
-            ) 
-        #'MARKET:CS.D.BITCOIN.TODAY.IP',
-        #'MARKET:IX.D.FTSE.DAILY.IP'
+        if epicName not in self.subcriptionKeyStore:
+            logger.debug("Adding epic listener...")
+            # Make Subscription using MERGE mode
+            subcription_prices = Subscription(
+                mode="MERGE",
+                items=['MARKET:'+epicName],
+                fields=["UPDATE_TIME", "BID", "OFFER", "CHANGE", "MARKET_STATE"]
+                ) 
+            #'MARKET:CS.D.BITCOIN.TODAY.IP',
+            #'MARKET:IX.D.FTSE.DAILY.IP'
 
-        # Adding the "on_price_update" function to Subscription
-        subcription_prices.addlistener(self.on_prices_update)
-        # Registering the Subscription
-        sub_key_prices = self.ig_stream_service.ls_client.subscribe(subcription_prices)
+            # Adding the "on_price_update" function to Subscription
+            subcription_prices.addlistener(self.on_prices_update)
+            # Registering the Subscription
+            sub_key_prices = self.ig_stream_service.ls_client.subscribe(subcription_prices)
+            
+            # Store the subscription key under the epic name
+            if sub_key_prices != 0:
+                self.subcriptionKeyStore[epicName] = sub_key_prices
+                logger.info("Successfully subscribed to epic: " + epicName)
+                result = True
+            else:            
+                logger.warning("Failed to subscribe to epic: " + epicName)
+                result = False
+        else:
+            # Already subscribed
+            result = True
+        return(result)
 
-        logger.debug("Success")
+    # Remove a subscription for an epic
+    def unsubscribeEpicListener(self, epicName):
+        if epicName in self.subcriptionKeyStore.keys():
+            subcriptionKey = self.subcriptionKeyStore[epicName]
+            self.ig_stream_service.ls_client.unsubscribe(subcriptionKey)
+            del(self.subcriptionKeyStore[epicName])
+            logger.info("Successfully unsubscribed from epic: " + epicName)
+            result = True
+        else:            
+            logger.warning("Failed to unsubscribe from epic: " + epicName)
+            result = False
+        return(result)
+
+    # Update the subscriptions using a list of epics and remove any that aren't on there
+    def refreshEpicSubscriptions(self,subscribeList):
+        # add new subscriptions
+        for epic in subscribeList:
+            self.addEpicListener(epic)
+
+        # unsubscribe to ones not on the list
+        remove = list()
+        for epic in self.subcriptionKeyStore.keys():
+            if epic not in subscribeList:
+                remove.append(epic)
+        for epic in remove:     # dp this in two stages to avoid changing the keys inside the iterator loop
+            self.unsubscribeEpicListener(epic)
 
     # Add a listener for account updates
     def addAccountListener(self, accountId):
