@@ -54,7 +54,7 @@ docs/_build/
 target/
 
 # config
-*_config.*
+*_config.py
 *_config.old.*
 
 # Mac OS
